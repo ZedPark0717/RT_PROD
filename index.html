@@ -17,11 +17,11 @@
   <!-- Branding placeholder: replace this wordmark with the approved embedded Maersk logo. No external asset is required. -->
   <div class="brand"><span class="wordmark"><span class="mark" aria-hidden="true">✳</span>MAERSK</span></div>
   <h1 class="login-title">Return Productivity</h1><p class="login-sub">Return operation dashboard</p>
-  <div class="field"><label for="apiUrl">API 연결 주소</label><input id="apiUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec" required><span class="hint">관리자가 제공한 Apps Script 웹 앱 주소를 입력하세요.</span></div><div class="field"><label for="userId">Employee ID</label><input id="userId" autocomplete="username" required placeholder="아이디를 입력하세요"></div>
+  <div class="field"><label for="userId">Employee ID</label><input id="userId" autocomplete="username" required placeholder="아이디를 입력하세요"></div>
   <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required placeholder="비밀번호를 입력하세요"></div>
   <button id="loginButton" class="primary" style="width:100%" type="submit">LOGIN</button><button id="demoButton" class="ghost" style="width:100%;margin-top:10px" type="button">데모 화면 보기</button>
   <p id="loginError" class="error" role="alert"></p>
-  <p id="loginNote" class="hint">실제 로그인은 API 연결 후 사용할 수 있습니다.<br>화면만 확인하려면 ‘데모 화면 보기’를 눌러 주세요.<br>데모 입력은 이 브라우저에만 저장됩니다.</p>
+  <p id="loginNote" class="hint">등록된 아이디와 비밀번호로 로그인하세요.<br>화면만 확인하려면 ‘데모 화면 보기’를 눌러 주세요.<br>데모 입력은 이 브라우저에만 저장됩니다.</p>
  </form>
 </section>
 <div id="app" class="app" hidden>
@@ -81,10 +81,10 @@ document.querySelectorAll('[data-view]').forEach((b,i)=>{b.addEventListener('cli
 $('date').innerHTML=[...rows].reverse().map(r=>`<option>${r.date}</option>`).join('');$('date').addEventListener('change',()=>render());render();
 // GitHub Pages front end. API_CONTRACT.md describes the matching server contract.
 // No password or server secret belongs in this HTML. API URL is public configuration.
-// Optional deployment default; leave empty to enter the /exec URL in the login screen.
-const DEFAULT_API_URL='';
+// Fixed deployment URL. End users enter only their ID and password.
+const DEFAULT_API_URL='https://script.google.com/macros/s/AKfycbx-th6ZQLQ5VDFllj4uxoCgwwYvMBtYC-VwziNCzt7Gqk8Pro0VDmfdnjZIulWjXDRb/exec';
 const sessionKey='returnProductivity.tokenSession.v3';
-const endpointKey='returnProductivity.apiEndpoint.v3';
+
 let expires=0,accessToken='',apiUrl='',authEpoch=0,loginBusy=false;
 function endpoint(value){try{const u=new URL(value.trim());if(u.protocol!=='https:'||u.hostname!=='script.google.com'||!/^\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(u.pathname)||u.search||u.hash||u.username||u.password)throw Error();return u.href;}catch(e){throw Error('Apps Script 웹 앱 주소(https://script.google.com/macros/s/배포ID/exec)를 입력해 주세요.');}}
 function rememberSession(){try{sessionStorage.setItem(sessionKey,JSON.stringify({token:accessToken,expires,apiUrl}));}catch(e){/* In-memory login remains usable; refresh will require another login. */}}
@@ -96,7 +96,7 @@ function discardSession(message=''){
 }
 function showApp(){ $('loginPage').hidden=true;$('app').hidden=false;setTab('dashboard');$('sessionUser').textContent=HOSTED?'인증됨':'DEMO';tick();$('tab-dashboard').focus(); }
 function tick(){if(!expires)return;const seconds=Math.ceil((expires-Date.now())/1000);if(seconds<=0){discardSession('세션이 만료되었습니다. 다시 로그인해 주세요.');return}$('sessionTime').textContent=String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');}
-function loginControls(disabled){loginBusy=disabled;$('loginButton').disabled=disabled;$('demoButton').disabled=disabled;$('apiUrl').disabled=disabled;$('userId').disabled=disabled;$('password').disabled=disabled;}
+function loginControls(disabled){loginBusy=disabled;$('loginButton').disabled=disabled;$('demoButton').disabled=disabled;$('userId').disabled=disabled;$('password').disabled=disabled;}
 async function rpc(action,payload={}){
  const needsToken=!['login'].includes(action);
  if(needsToken&&(!accessToken||expires<=Date.now())){discardSession('세션이 만료되었습니다. 다시 로그인해 주세요.');throw Error('다시 로그인해 주세요.');}
@@ -115,7 +115,7 @@ async function rpc(action,payload={}){
  }catch(e){if(e.name==='AbortError')throw Error('응답 시간이 초과되었습니다. 저장 요청이었다면 최신 데이터를 불러와 저장 여부부터 확인하세요.');if(e instanceof TypeError)throw Error('API에 연결하지 못했습니다. 네트워크, 배포 주소와 공개 접근 설정을 확인하세요.');throw e;}finally{clearTimeout(timeout);}
 }
 async function login(){if(loginBusy)return;loginControls(true);$('loginError').textContent='로그인을 확인하고 있습니다…';let authenticated=false;
- try{apiUrl=endpoint($('apiUrl').value);HOSTED=true;authEpoch++;accessToken='';expires=0;try{sessionStorage.removeItem(sessionKey);localStorage.setItem(endpointKey,apiUrl)}catch(e){}
+ try{apiUrl=endpoint(DEFAULT_API_URL);HOSTED=true;authEpoch++;accessToken='';expires=0;try{sessionStorage.removeItem(sessionKey)}catch(e){}
   const result=await rpc('login',{userId:$('userId').value.trim(),password:$('password').value});
   if(!result||typeof result.token!=='string'||!result.token.length||result.token.length>8192||!Number.isFinite(result.expiresAt)||result.expiresAt<=Date.now())throw Error('토큰 또는 만료 시간이 올바르지 않습니다. API 응답을 확인하세요.');
   accessToken=result.token;expires=result.expiresAt;authenticated=true;rememberSession();
@@ -128,7 +128,7 @@ async function logout(){if(loginBusy)return;const wasLive=HOSTED;let message='�
 function modeLabels(){ $('dataBadge').textContent=HOSTED?'API 연결':'로컬 데모';$('footerNote').textContent=HOSTED?'Return Productivity · 인증된 API 데이터':'로컬 데모 · 예시 데이터를 포함합니다. 서버로 전송하지 않습니다.'; }
 function demoLogin(){if(loginBusy)return;authEpoch++;HOSTED=false;accessToken='';try{sessionStorage.removeItem(sessionKey)}catch(e){}
  try{const saved=readLocal();applySnapshot(saved||{rows:seedRows,opening:400,revision:''});expires=Date.now()+1800000;modeLabels();$('loginError').textContent='';$('password').value='';showApp();}catch(e){$('loginError').textContent=e.message;}}
-async function restoreLogin(){try{const stored=JSON.parse(sessionStorage.getItem(sessionKey)||'null');if(!stored)return;if(typeof stored.token!=='string'||!stored.token||!Number.isFinite(stored.expires)||stored.expires<=Date.now()){sessionStorage.removeItem(sessionKey);return}apiUrl=endpoint(stored.apiUrl);$('apiUrl').value=apiUrl;accessToken=stored.token;expires=stored.expires;HOSTED=true;loginControls(true);$('loginError').textContent='로그인 상태를 확인하고 있습니다…';applySnapshot(await rpc('list'));modeLabels();showApp();$('loginError').textContent='';}catch(e){discardSession(e.message);}finally{loginControls(false);}}
+async function restoreLogin(){try{const stored=JSON.parse(sessionStorage.getItem(sessionKey)||'null');if(!stored)return;if(typeof stored.token!=='string'||!stored.token||!Number.isFinite(stored.expires)||stored.expires<=Date.now()){sessionStorage.removeItem(sessionKey);return}if(stored.apiUrl!==DEFAULT_API_URL){sessionStorage.removeItem(sessionKey);return}apiUrl=endpoint(DEFAULT_API_URL);accessToken=stored.token;expires=stored.expires;HOSTED=true;loginControls(true);$('loginError').textContent='로그인 상태를 확인하고 있습니다…';applySnapshot(await rpc('list'));modeLabels();showApp();$('loginError').textContent='';}catch(e){discardSession(e.message);}finally{loginControls(false);}}
 
 // Shared schema is also validated by the server; browser validation is for usability only.
 const RAW_FIELDS=['date','day','night','dh','nh','cj','hanjin','lotte','other'];
@@ -191,7 +191,7 @@ $('fillExample').addEventListener('click',()=>{$('pasteData').value='작업일\t
 const seedRows=rows.map(cleanRaw);
 // Never silently fall back to demo or cache real operational data in localStorage.
 rawData=[];rows.splice(0);refreshAll();modeLabels();
-try{$('apiUrl').value=DEFAULT_API_URL||localStorage.getItem(endpointKey)||''}catch(e){$('apiUrl').value=DEFAULT_API_URL}
+apiUrl=endpoint(DEFAULT_API_URL);
 $('raw-date').value=new Date().toLocaleDateString('sv-SE');
 $('loginForm').addEventListener('submit',e=>{e.preventDefault();login()});
 $('demoButton').addEventListener('click',demoLogin);$('logout').addEventListener('click',logout);
