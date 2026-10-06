@@ -321,7 +321,7 @@ function movementInspect(text,name){
  const matrix=csvParse(text,delimiter),header=matrix[0]||[],map={};
  header.forEach((v,i)=>{const k=csvHead(v);if(k in map)throw Error('중복 열: '+v);map[k]=i});
  for(const k of ['Description','Movement type','Mov. u.','Target position','Finish date'])if(map[csvHead(k)]===undefined)throw Error('필수 열이 없습니다: '+k);
- const workers=new Map(),hours=new Map(),buckets=new Map(),stats={total:0,accepted:0,nonPlacing:0,nonReturn:0,nonLocation:0,units:0};
+ const sourceRows=[],workers=new Map(),hours=new Map(),buckets=new Map(),stats={total:0,accepted:0,nonPlacing:0,nonReturn:0,nonLocation:0,units:0};
  for(let i=1;i<matrix.length;i++){
   const row=matrix[i];if(row.every(v=>!v.trim()))continue;stats.total++;
   if(row.length!==header.length)throw Error((i+1)+'행: 열 개수가 헤더와 다릅니다.');
@@ -343,10 +343,10 @@ function movementInspect(text,name){
   const units=csvNumber(get('Mov. u.'));
   if(units===null||!Number.isSafeInteger(units))throw Error((i+1)+'행: Mov. u.는 0 이상의 정수여야 합니다.');
   if(!buckets.has(key))buckets.set(key,{date:workDate,shift,type,f:0,h:0,m:0});
-  const group=buckets.get(key);group[location]+=units;stats.accepted++;stats.units+=units;
+  sourceRows.push({fingerprint:JSON.stringify(Object.keys(map).sort().map(k=>[k,(row[map[k]]||'').trim()])),line:i+1});const group=buckets.get(key);group[location]+=units;stats.accepted++;stats.units+=units;
  }
  if(!stats.accepted)throw Error('집계할 RT_/SRT_/BS Placing 및 F-/H-/M- 작업이 없습니다.');
- return {name,kind:'movement',map,stats,buckets:[...buckets.values()],hours:[]};
+ return {name,kind:'movement',map,stats,sourceRows,buckets:[...buckets.values()],hours:[]};
 }
 function movementExpand(files){
  if(files.filter(f=>f.kind==='movement').length>1)throw Error('중복 합산 방지를 위해 작업 이력은 한 번에 한 파일만 가져오세요.');
@@ -363,6 +363,17 @@ function movementExpand(files){
 }
 
 function movementHours(files){return files.filter(f=>f.kind==='movement').map(f=>'<h3>시간대별 추정 MH · PROD</h3><p class="hint">총 '+f.stats.mh+' MH. 해당 시간에 양수 실적이 있는 작업자 1명 = 1 MH. RT/SRT는 수량 비율 배분. 실제 출퇴근·휴게 시간은 반영하지 않습니다. 표는 소수 둘째 자리로 표시합니다.</p>'+table(['완료일 / 시각','작업일','근무조','인원','RT Units','SRT Units','RT 추정 MH','SRT 추정 MH','RT 추정 PROD','SRT 추정 PROD'],f.hours.map(x=>[x.date+' '+x.hour+':00',x.workDate,x.shift==='d'?'주간':'야간',x.workers,x.RT,x.SRT,x.rtMh.toFixed(2),x.srtMh.toFixed(2),opDisplay(opProd(x.RT,x.rtMh),true),opDisplay(opProd(x.SRT,x.srtMh),true)]))).join('');}
+function combineMovementFiles(files){
+ const movements=files.filter(f=>f.kind==='movement');if(movements.length<2)return files;
+ const seen=new Map(),buckets=new Map();
+ for(const file of movements){
+  if(!file.sourceRows)throw Error(file.name+': 원본을 다시 선택하고 분석하세요.');
+  const own=new Map();for(const row of file.sourceRows){const prior=seen.get(row.fingerprint);if(prior)throw Error('SYSTEM 파일 간 동일한 원본 행이 겹칩니다: '+prior.name+' '+prior.line+'행 / '+file.name+' '+row.line+'행. 겹치는 파일을 제외한 뒤 다시 분석하세요.');own.set(row.fingerprint,{name:file.name,line:row.line});}
+  for(const [key,value] of own)seen.set(key,value);
+  for(const g of file.buckets){const key=[g.date,g.shift,g.type].join('|');if(!buckets.has(key))buckets.set(key,{date:g.date,shift:g.shift,type:g.type,f:0,h:0,m:0});const sum=buckets.get(key);for(const field of ['f','h','m'])sum[field]+=g[field];}
+ }
+ return [...files.filter(f=>f.kind!=='movement'),{kind:'movement',name:'SYSTEM 파일 통합',buckets:[...buckets.values()]}];
+}
 // Three source importers. Raw identifiers remain in memory, only aggregates are saved.
 const LMS_DEFAULT={WORK52:'dRT.scanMh',WORK45:'dRT.scanMh',WORK46:'dRT.gohMh',WORK47:'dRT.putMh',WORK48:'dRT.putMh',WORK65:'dSRT.scanMh',WORK66:'dSRT.scanMh',WORK68:'dSRT.gohMh',WORK70:'dSRT.putMh',WORK69:'dSRT.putMh',WORK133:'dSRT.putMh'};
 function sourceMatrix(text){const first=text.replace(/^\uFEFF/,'').split(/\r?\n/,1)[0];return csvParse(text,first.includes('\t')?'\t':first.includes(';')?';':',');}
@@ -390,7 +401,7 @@ function lmsInspect(matrix,name,shift=''){const hi=matrix.findIndex((r,i)=>i<30&
 }
 function sourceMerge(files,base,mapping,excludeErrors=false){const rows=new Map(base.map(r=>[r.date,JSON.parse(JSON.stringify(r))])),changed=new Set(),assigned=new Map(),warnings=[];
  function assign(date,group,field,value){const id=[date,group,field].join('|');if(assigned.has(id))throw Error(date+' '+group+' '+field+': 중복 자료입니다. 같은 기간은 하나의 파일로 가져오세요.');assigned.set(id,true);let r=rows.get(date);if(!r){r={date,day:0,night:0,dh:0,nh:0,cj:0,hanjin:0,lotte:0,other:0};rows.set(date,r);}r.operations ||= Object.fromEntries(OP_GROUPS.map(([k])=>[k,Object.fromEntries(OP_FIELDS.map(f=>[f,null]))]));const g=r.operations[group];g[field]=value;if(field==='putMh')delete g.putMhMethod;changed.add(date);return g;}
- for(const f of files){
+ for(const f of combineMovementFiles(files)){
   if(f.kind==='movement'){for(const b of f.buckets){const k=b.shift+b.type;for(const x of ['f','h','m'])assign(b.date,k,x,b[x]);assign(b.date,k,'putUnits',b.f+b.h+b.m);}}
   if(f.kind==='era'){for(const b of f.buckets){const k=b.shift+'RT';assign(b.date,k,'scan',b.units);assign(b.date,k,'scanOrders',b.orders);assign(b.date,k,'eraMh',b.mh);}}
   if(f.kind==='lms'){if(!['d','n'].includes(f.shift))throw Error(f.name+': 주간/야간을 선택하세요.');const totals=new Map(),bad=new Set();
@@ -437,11 +448,11 @@ function csvList(){ $('csvFileList').innerHTML=csvFiles.map((f,i)=>`<div class="
  $('lmsMappings').innerHTML=codes.size?'<details><summary>LMS 작업 코드 연결 · 펼쳐서 확인/변경</summary><p class="hint">스캔+Flat 포장 = Scan. GOH 포장은 MH만 별도 표시합니다. 지원·리페어 작업은 기본 제외입니다. 필요하면 아래에서 구분을 변경하세요.</p>'+table(['작업 코드','작업명','집계 항목'],[...codes].map(([code,label])=>[code,csvEscape(label),`<select data-lms-code="${code}">${options.map(([v,n])=>`<option value="${v}" ${v===(lmsMapping[code]||'')?'selected':''}>${n}</option>`).join('')}</select>`]))+'</details>':'';
  $('lmsMappings').querySelectorAll('[data-lms-code]').forEach(e=>e.addEventListener('change',()=>{lmsMapping[e.dataset.lmsCode]=e.value;csvResetPreview()}));
 }
-function csvOpen(kind='system'){if(busy||csvLoading)return;csvEpoch++;clearStage();csvKind=kind;$('excludeLmsErrors').checked=false;$('lmsErrorOption').hidden=kind!=='lms';csvFiles=[];csvPrepared=null;lmsMapping={...LMS_DEFAULT};$('csvInput').value='';$('csvPaste').value='';csvList();csvResetPreview();$('csvTitle').textContent={system:'SYSTEM MOVEMENT 업로드',era:'ERA 업로드',lms:'LMS(MH) 업로드'}[kind];$('csvGuide').textContent={system:'Placing · RT_/SRT_/BS · F/H/M별 Mov. u. 합계. Finish date 기준 주간 09:00~20:59:59 / 야간 21:00~다음 날 08:59:59. Put-away MH는 LMS에서 가져옵니다.',era:'RT Scan: ORDER 중복 제거로 오더량, SKU가 있는 행 수로 Units. DATETIME LOCALTIME 기준 주야간 구분. 시간대별 OPERATOR 1명당 추정 1 MH.',lms:'엑셀은 Day/Night 시트를 함께 읽습니다. CSV는 Day 또는 Night 시트를 각각 저장해 올리세요. LMS 주야간 MH는 원본 값을 그대로 사용합니다(주간 08시 포함).'}[kind];$('csvInput').accept=kind==='system'?'.csv,.tsv,.txt':'.xlsx,.csv,.tsv,.txt';$('csvDialog').showModal();$('csvInput').focus();}
+function csvOpen(kind='system'){if(busy||csvLoading)return;csvEpoch++;clearStage();csvKind=kind;$('excludeLmsErrors').checked=false;$('lmsErrorOption').hidden=kind!=='lms';csvFiles=[];csvPrepared=null;lmsMapping={...LMS_DEFAULT};$('csvInput').value='';$('csvPaste').value='';csvList();csvResetPreview();$('csvTitle').textContent={system:'SYSTEM MOVEMENT 업로드',era:'ERA 업로드',lms:'LMS(MH) 업로드'}[kind];$('csvGuide').textContent={system:'Placing · RT_/SRT_/BS · F/H/M별 Mov. u. 합계. Finish date 기준 주간 09:00~20:59:59 / 야간 21:00~다음 날 08:59:59. 여러 파일에 나뉜 작업일 실적은 자동 합산합니다. 파일에 포함된 모든 작업일을 반영합니다. Put-away MH는 LMS에서 가져옵니다.',era:'RT Scan: ORDER 중복 제거로 오더량, SKU가 있는 행 수로 Units. DATETIME LOCALTIME 기준 주야간 구분. 시간대별 OPERATOR 1명당 추정 1 MH.',lms:'엑셀은 Day/Night 시트를 함께 읽습니다. CSV는 Day 또는 Night 시트를 각각 저장해 올리세요. LMS 주야간 MH는 원본 값을 그대로 사용합니다(주간 08시 포함).'}[kind];$('csvInput').accept=kind==='system'?'.csv,.tsv,.txt':'.xlsx,.csv,.tsv,.txt';$('csvDialog').showModal();$('csvInput').focus();}
 function inspectSource(matrix,name,kind,shift=''){if(kind==='era')return eraInspect(matrix,name);if(kind==='lms')return lmsInspect(matrix,name,shift);throw Error('지원하지 않는 자료');}
 $('csvOpen').addEventListener('click',()=>csvOpen('system'));$('eraOpen').addEventListener('click',()=>csvOpen('era'));$('lmsOpen').addEventListener('click',()=>csvOpen('lms'));
 $('csvClose').addEventListener('click',()=>{if(!busy&&!csvLoading)$('csvDialog').close()});$('csvDialog').addEventListener('cancel',e=>{if(busy||csvLoading)e.preventDefault()});
-$('csvInput').addEventListener('change',async()=>{const epoch=++csvEpoch,auth=authEpoch,kind=csvKind;csvResetPreview();csvFiles=[];$('csvPaste').value='';csvLoading=true;$('csvPaste').disabled=true;$('csvAnalyze').disabled=true;try{const files=[...$('csvInput').files];if(files.length>10||files.reduce((s,f)=>s+f.size,0)>100*1024*1024||files.some(f=>f.size>50*1024*1024))throw Error('최대 10개, 파일당 50MB, 합계 100MB까지 가능합니다.');const loaded=[];
+$('csvInput').addEventListener('change',async()=>{const epoch=++csvEpoch,auth=authEpoch,kind=csvKind;csvResetPreview();csvFiles=[];$('csvPaste').value='';csvLoading=true;$('csvPaste').disabled=true;$('csvAnalyze').disabled=true;try{const files=[...$('csvInput').files];if(files.length>31||files.reduce((s,f)=>s+f.size,0)>100*1024*1024||files.some(f=>f.size>50*1024*1024))throw Error('최대 31개, 파일당 50MB, 합계 100MB까지 가능합니다.');const loaded=[];
  for(const f of files){const bytes=await f.arrayBuffer();if(/\.xlsx$/i.test(f.name)){if(kind==='system')throw Error('SYSTEM은 CSV 또는 TXT 원본을 올려주세요.');const sheets=await readSourceXlsx(bytes,kind);for(const s of sheets)loaded.push(inspectSource(s.matrix,f.name+' · '+s.name,kind,kind==='lms'?(s.name.toLowerCase()==='day'?'d':'n'):''));}else{let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch(e){text=new TextDecoder('euc-kr',{fatal:true}).decode(bytes)}loaded.push(kind==='system'?movementInspect(text,f.name):inspectSource(sourceMatrix(text),f.name,kind));}}
  if(epoch!==csvEpoch||auth!==authEpoch)return;csvFiles=loaded;csvList();$('csvSummary').textContent='자료를 읽었습니다. 분석 후 집계를 확인하세요.';
  }catch(e){if(epoch===csvEpoch){csvFiles=[];csvList();$('csvSummary').textContent=e.message;}}finally{csvLoading=false;$('csvPaste').disabled=false;$('csvAnalyze').disabled=false;}});
@@ -449,7 +460,7 @@ $('csvPaste').addEventListener('input',()=>{csvEpoch++;csvFiles=[];$('csvInput')
 $('csvAnalyze').addEventListener('click',()=>{if(busy||csvLoading)return;csvResetPreview();try{const text=$('csvPaste').value;if(text.trim()){if(text.length>50*1024*1024)throw Error('원본 크기가 50MB를 초과합니다.');csvFiles=[csvKind==='system'?movementInspect(text,'SYSTEM 붙여넣기'):inspectSource(sourceMatrix(text),csvKind.toUpperCase()+' 붙여넣기',csvKind,csvFiles[0]?.shift||'')];csvList();}if(!csvFiles.length)throw Error('자료를 먼저 선택하거나 붙여넣으세요.');const merged=sourceMerge(csvFiles,rawData,lmsMapping,$('excludeLmsErrors').checked);if(JSON.stringify({rows:merged,revision}).length>240000)throw Error('저장 용량을 초과했습니다. 기간을 나눠 올려주세요.');csvPrepared={rows:merged,revision,epoch:authEpoch,overwrite:csvOverwriteInfo(merged,rawData)};
  $('csvSummary').textContent=merged.length+'개 작업일 분석 완료. 아래 집계를 확인하고 저장하세요.';
  const reports=csvFiles.map(f=>f.kind==='era'?`<p>ERA ${csvEscape(f.name)}: ${f.count}행, SKU 빈칸 ${f.blankSku}행, 필터 설명 등 ${f.footer}행 제외.</p>`:f.kind==='movement'?`<p>SYSTEM ${csvEscape(f.name)}: ${f.stats.total}행 중 ${f.stats.accepted}행 / ${f.stats.units} Units 반영. Placing 아님 ${f.stats.nonPlacing}, RT/SRT/BS 아님 ${f.stats.nonReturn}, F/H/M 아님 ${f.stats.nonLocation}행 제외.</p>`:`<p>LMS ${csvEscape(f.name)}: ${f.shift==='d'?'주간':'야간'}, 선택한 코드의 날짜별 MH 합계.</p>`).join('');
- $('csvPreview').innerHTML='<div class="note">전체 근무 실적을 올려주세요. 같은 날짜·근무조의 해당 자료를 다시 저장하면 갱신되며 중복 누적하지 않습니다. 다른 자료의 값은 유지합니다. 원본에 없는 그룹은 유지하며, LMS 빈칸은 미입력·0은 실제 0으로 구분합니다. MH가 없거나 0이면 PROD는 —로 표시합니다.</div>'+reports+merged.warnings.map(w=>'<p class="note">'+csvEscape(w)+'</p>').join('')+(csvPrepared.overwrite.dates.length?'<h3>기존 날짜 확인 · '+csvPrepared.overwrite.dates.length+'일</h3><p class="note">같은 값도 재저장 전에 확인합니다. 아래는 이번 파일이 갱신할 항목입니다. —는 기존 미입력입니다.</p>'+table(['작업일','구분','항목','기존 값','새 값'],csvPrepared.overwrite.changes.map(c=>[c.date,c.group,c.field,opDisplay(c.before),opDisplay(c.after)])):'')+operationTable(merged)+operationTable(merged,true)+csvFiles.filter(f=>f.kind==='era').map(f=>'<h3>ERA 시간대별 추정 MH</h3>'+table(['작업일','시간대','근무조','Units','추정 MH','ERA Scan PROD'],f.hours.map(h=>[h.workDate,h.time,h.shift==='d'?'주간':'야간',h.units,h.mh,opDisplay(opProd(h.units,h.mh),true)]))).join('');$('csvSave').disabled=false;
+ $('csvPreview').innerHTML='<div class="note">SYSTEM은 선택한 파일 전체를 작업일별로 합산합니다. 첫날 새벽은 전날 야간이며, 마지막 날 야간은 다음 날 새벽 파일까지 함께 올려야 완성됩니다. 기존 날짜를 재저장할 때는 해당 근무의 파일을 함께 선택하세요. 같은 날짜·근무조의 해당 자료를 다시 저장하면 갱신되며 중복 누적하지 않습니다. 다른 자료의 값은 유지합니다. 원본에 없는 그룹은 유지하며, LMS 빈칸은 미입력·0은 실제 0으로 구분합니다. MH가 없거나 0이면 PROD는 —로 표시합니다.</div>'+reports+merged.warnings.map(w=>'<p class="note">'+csvEscape(w)+'</p>').join('')+(csvPrepared.overwrite.dates.length?'<h3>기존 날짜 확인 · '+csvPrepared.overwrite.dates.length+'일</h3><p class="note">같은 값도 재저장 전에 확인합니다. 아래는 이번 파일이 갱신할 항목입니다. —는 기존 미입력입니다.</p>'+table(['작업일','구분','항목','기존 값','새 값'],csvPrepared.overwrite.changes.map(c=>[c.date,c.group,c.field,opDisplay(c.before),opDisplay(c.after)])):'')+operationTable(merged)+operationTable(merged,true)+csvFiles.filter(f=>f.kind==='era').map(f=>'<h3>ERA 시간대별 추정 MH</h3>'+table(['작업일','시간대','근무조','Units','추정 MH','ERA Scan PROD'],f.hours.map(h=>[h.workDate,h.time,h.shift==='d'?'주간':'야간',h.units,h.mh,opDisplay(opProd(h.units,h.mh),true)]))).join('');$('csvSave').disabled=false;
  }catch(e){$('csvSummary').textContent=e.message;}});
 $('excludeLmsErrors').addEventListener('change',csvResetPreview);
 function csvLock(value){for(const id of ['csvSave','csvAnalyze','csvClose','csvInput','csvPaste','excludeLmsErrors'])$(id).disabled=value;$('csvFileList').querySelectorAll('select').forEach(e=>e.disabled=value);$('lmsMappings').querySelectorAll('select').forEach(e=>e.disabled=value);}
